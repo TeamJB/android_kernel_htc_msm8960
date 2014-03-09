@@ -48,6 +48,7 @@
 
 /* module params */
 #define WCNSS_CONFIG_UNSPECIFIED (-1)
+#define UINT32_MAX (0xFFFFFFFFU)
 
 static int has_48mhz_xo = WCNSS_CONFIG_UNSPECIFIED;
 module_param(has_48mhz_xo, int, S_IWUSR | S_IRUGO);
@@ -262,7 +263,7 @@ static struct {
 	int	fw_cal_available;
 	int	user_cal_read;
 	int	user_cal_available;
-	int	user_cal_rcvd;
+	u32	user_cal_rcvd;
 	int	user_cal_exp_size;
 	int	device_opened;
 	int	ctrl_device_opened;
@@ -1576,19 +1577,17 @@ fail_gpio_res:
 static int wcnss_node_open(struct inode *inode, struct file *file)
 {
 	struct platform_device *pdev;
+	int rc = 0;
 
 	if (!penv)
 		return -EFAULT;
 
-	/* first open is only to trigger WCNSS platform driver */
 	if (!penv->triggered) {
 		pr_info(DEVICE " triggered by userspace\n");
 		pdev = penv->pdev;
-		return wcnss_trigger_config(pdev);
-
-	} else if (penv->device_opened) {
-		pr_info(DEVICE " already opened\n");
-		return -EBUSY;
+		rc = wcnss_trigger_config(pdev);
+		if (rc)
+			return -EFAULT;
 	}
 
 	mutex_lock(&penv->dev_lock);
@@ -1599,7 +1598,7 @@ static int wcnss_node_open(struct inode *inode, struct file *file)
 	penv->device_opened = 1;
 	mutex_unlock(&penv->dev_lock);
 
-	return 0;
+	return rc;
 }
 
 static ssize_t wcnss_wlan_read(struct file *fp, char __user
@@ -1644,7 +1643,7 @@ static ssize_t wcnss_wlan_write(struct file *fp, const char __user
 			*user_buffer, size_t count, loff_t *position)
 {
 	int rc = 0;
-	int size = 0;
+	size_t size = 0;
 
 	if (!penv || !penv->device_opened || penv->user_cal_available)
 		return -EFAULT;
@@ -1652,7 +1651,7 @@ static ssize_t wcnss_wlan_write(struct file *fp, const char __user
 	if (penv->user_cal_rcvd == 0 && count >= 4
 			&& !penv->user_cal_data) {
 		rc = copy_from_user((void *)&size, user_buffer, 4);
-		if (size > MAX_CALIBRATED_DATA_SIZE) {
+		if (!size || size > MAX_CALIBRATED_DATA_SIZE) {
 			pr_err(DEVICE " invalid size to write %d\n", size);
 			return -EFAULT;
 		}
@@ -1671,7 +1670,8 @@ static ssize_t wcnss_wlan_write(struct file *fp, const char __user
 	} else if (penv->user_cal_rcvd == 0 && count < 4)
 		return -EFAULT;
 
-	if (MAX_CALIBRATED_DATA_SIZE < count + penv->user_cal_rcvd) {
+	if ((UINT32_MAX - count < penv->user_cal_rcvd) ||
+	     MAX_CALIBRATED_DATA_SIZE < count + penv->user_cal_rcvd) {
 		pr_err(DEVICE " invalid size to write %d\n", count +
 				penv->user_cal_rcvd);
 		rc = -ENOMEM;
